@@ -32,6 +32,30 @@
       },
       "required": ["bestWeight", "bestReps", "exerciseName"]
     },
+    "WeightEntry": {
+      "title": "Weight Entry",
+      "description": "Body weight tracking entry.",
+      "type": "object",
+      "properties": {
+        "weight": { "type": "number" },
+        "date": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" }
+      },
+      "required": ["weight", "date"]
+    },
+    "SessionSet": {
+      "title": "Session Set",
+      "description": "A single set performed during a workout session.",
+      "type": "object",
+      "properties": {
+        "exerciseName": { "type": "string" },
+        "weight": { "type": "number" },
+        "reps": { "type": "number" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "date": { "type": "string", "description": "YYYY-MM-DD format for grouping" }
+      },
+      "required": ["exerciseName", "weight", "reps", "date"]
+    },
     "UserProfile": {
       "title": "User Profile",
       "description": "General settings and state for the user.",
@@ -52,6 +76,14 @@
     "/users/{userId}/pbs/{exerciseName}": {
       "schema": "PersonalBest",
       "description": "Tracking progress for individual exercises."
+    },
+    "/users/{userId}/weightEntries/{entryId}": {
+      "schema": "WeightEntry",
+      "description": "Body weight history."
+    },
+    "/users/{userId}/sets/{setId}": {
+      "schema": "SessionSet",
+      "description": "Log of every set performed."
     },
     "/users/{userId}/profile/settings": {
       "schema": "UserProfile",

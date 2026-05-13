@@ -15,9 +15,23 @@ import {
   RefreshCw,
   LogOut,
   User as UserIcon,
-  Loader2
+  Loader2,
+  History,
+  Scale,
+  TrendingUp,
+  Plus,
+  Trash2
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import { 
+  LineChart, 
+  Line, 
+  XAxis, 
+  YAxis, 
+  CartesianGrid, 
+  Tooltip, 
+  ResponsiveContainer 
+} from 'recharts';
 import { 
   auth, 
   db, 
@@ -27,12 +41,15 @@ import {
   doc, 
   getDoc, 
   setDoc, 
+  getDocs,
   handleFirestoreError, 
   OperationType,
   serverTimestamp,
-  getDocs,
   collection,
-  User
+  User,
+  deleteDoc,
+  writeBatch,
+  onSnapshot
 } from './lib/firebase';
 import { Exercise, POOLS } from './data/exercises';
 
@@ -45,6 +62,22 @@ interface PB {
   bestReps: number;
   bestDate: string;
   exerciseName: string;
+}
+
+interface WeightEntry {
+  id?: string;
+  weight: number;
+  date: string;
+  timestamp: any;
+}
+
+interface SessionSet {
+  id?: string;
+  exerciseName: string;
+  weight: number;
+  reps: number;
+  date: string;
+  timestamp: any;
 }
 
 const DAY_CONFIG = [
@@ -117,10 +150,14 @@ export default function App() {
   
   const [currentDays, setCurrentDays] = useState<Exercise[][]>(buildPlan());
   const [personalBests, setPersonalBests] = useState<Record<string, PB>>({});
+  const [weightHistory, setWeightHistory] = useState<WeightEntry[]>([]);
+  const [sessionSets, setSessionSets] = useState<SessionSet[]>([]);
   const [activeWeek, setActiveWeek] = useState<number | null>(null);
-  const [activeView, setActiveView] = useState<'workout' | 'library'>('workout');
+  const [activeView, setActiveView] = useState<'workout' | 'library' | 'progress' | 'session'>('workout');
   const [expandedDays, setExpandedDays] = useState<Record<number, boolean>>({});
   const [flashMessage, setFlashMessage] = useState<Record<string, string>>({});
+  const [newWeight, setNewWeight] = useState<string>("");
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   // Auth Listener
   useEffect(() => {
@@ -135,51 +172,69 @@ export default function App() {
   useEffect(() => {
     if (!currentUser) return;
 
-    const loadData = async () => {
-      setDataLoading(true);
+    const workoutPath = `users/${currentUser.uid}/workout/current`;
+    const settingsPath = `users/${currentUser.uid}/profile/settings`;
+    const setsPath = `users/${currentUser.uid}/sets`;
+    const pbsPath = `users/${currentUser.uid}/pbs`;
+    const weightPath = `users/${currentUser.uid}/weightEntries`;
+
+    // Static Load for Workout & Settings
+    const loadStatic = async () => {
       try {
-        // Load Workout
-        const workoutPath = `users/${currentUser.uid}/workout/current`;
-        const workoutDoc = await getDoc(doc(db, workoutPath));
-        if (workoutDoc.exists()) {
-          const data = workoutDoc.data();
-          // Convert stored object back to 2D array if needed
-          if (data.days && !Array.isArray(data.days)) {
-            const daysArr: Exercise[][] = [];
-            for (let i = 0; i < 4; i++) {
-              daysArr.push(data.days[`d${i}`] || []);
+        const [wDoc, sDoc] = await Promise.all([
+          getDoc(doc(db, workoutPath)),
+          getDoc(doc(db, settingsPath))
+        ]);
+
+        if (wDoc.exists()) {
+          const data = wDoc.data();
+          if (data.days) {
+            if (!Array.isArray(data.days)) {
+              const daysArr: Exercise[][] = [];
+              for (let i = 0; i < 4; i++) daysArr.push(data.days[`d${i}`] || []);
+              setCurrentDays(daysArr);
+            } else {
+              setCurrentDays(data.days as Exercise[][]);
             }
-            setCurrentDays(daysArr);
-          } else if (Array.isArray(data.days)) {
-            setCurrentDays(data.days as Exercise[][]);
           }
         }
 
-        // Load PBs
-        const pbsPath = `users/${currentUser.uid}/pbs`;
-        const pbsSnap = await getDocs(collection(db, pbsPath));
-        const pbs: Record<string, PB> = {};
-        pbsSnap.forEach(d => {
-          pbs[d.id] = d.data() as PB;
-        });
-        setPersonalBests(pbs);
-
-        // Load Settings
-        const settingsPath = `users/${currentUser.uid}/profile/settings`;
-        const settingsDoc = await getDoc(doc(db, settingsPath));
-        if (settingsDoc.exists()) {
-          const data = settingsDoc.data();
+        if (sDoc.exists()) {
+          const data = sDoc.data();
           if (data.activeWeek !== undefined) setActiveWeek(data.activeWeek);
           if (data.activeView) setActiveView(data.activeView as any);
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.GET, `users/${currentUser.uid}`);
-      } finally {
-        setDataLoading(false);
+        handleFirestoreError(err, OperationType.GET, "Static Load");
       }
     };
 
-    loadData();
+    loadStatic();
+
+    // Real-time listeners for Session Data
+    const unsubscribeSets = onSnapshot(collection(db, setsPath), (snapshot) => {
+      const sets: SessionSet[] = [];
+      snapshot.forEach(d => sets.push({ id: d.id, ...d.data() } as SessionSet));
+      setSessionSets(sets.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
+    }, (err) => handleFirestoreError(err, OperationType.GET, setsPath));
+
+    const unsubscribePbs = onSnapshot(collection(db, pbsPath), (snapshot) => {
+      const pbs: Record<string, PB> = {};
+      snapshot.forEach(d => { pbs[d.id] = d.data() as PB; });
+      setPersonalBests(pbs);
+    }, (err) => handleFirestoreError(err, OperationType.GET, pbsPath));
+
+    const unsubscribeWeight = onSnapshot(collection(db, weightPath), (snapshot) => {
+      const weights: WeightEntry[] = [];
+      snapshot.forEach(d => weights.push({ id: d.id, ...d.data() } as WeightEntry));
+      setWeightHistory(weights.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
+    }, (err) => handleFirestoreError(err, OperationType.GET, weightPath));
+
+    return () => {
+      unsubscribeSets();
+      unsubscribePbs();
+      unsubscribeWeight();
+    };
   }, [currentUser]);
 
   const saveWorkout = async (days: Exercise[][]) => {
@@ -203,13 +258,14 @@ export default function App() {
 
   const saveSettings = async (settings: any) => {
     if (!currentUser) return;
+    const path = `users/${currentUser.uid}/profile/settings`;
     try {
-      await setDoc(doc(db, `users/${currentUser.uid}/profile/settings`), {
+      await setDoc(doc(db, path), {
         ...settings,
         updatedAt: serverTimestamp()
       }, { merge: true });
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'profile/settings');
+      handleFirestoreError(err, OperationType.WRITE, path);
     }
   };
 
@@ -255,9 +311,10 @@ export default function App() {
 
   const handleSaveSet = async (exName: string, weight: string, reps: string) => {
     if (!weight || !currentUser) return;
-    const newWeight = parseFloat(weight) || 0;
-    const newReps = parseInt(reps) || 0;
+    const nWeight = parseFloat(weight) || 0;
+    const nReps = parseInt(reps) || 0;
     const dateStr = new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+    const fullDate = new Date().toISOString().split('T')[0];
     
     const existing = personalBests[exName];
     let isNewPB = false;
@@ -265,33 +322,60 @@ export default function App() {
     if (!existing) {
       isNewPB = true;
     } else {
-      if (newWeight > existing.bestWeight) {
+      if (nWeight > existing.bestWeight) {
         isNewPB = true;
-      } else if (newWeight === existing.bestWeight && newReps > existing.bestReps) {
+      } else if (nWeight === existing.bestWeight && nReps > existing.bestReps) {
         isNewPB = true;
       }
     }
 
     const updatedPB: PB = {
       exerciseName: exName,
-      lastWeight: newWeight,
-      lastReps: newReps,
+      lastWeight: nWeight,
+      lastReps: nReps,
       lastDate: dateStr,
-      bestWeight: isNewPB ? newWeight : (existing?.bestWeight || newWeight),
-      bestReps: isNewPB ? newReps : (existing?.bestReps || newReps),
+      bestWeight: isNewPB ? nWeight : (existing?.bestWeight || nWeight),
+      bestReps: isNewPB ? nReps : (existing?.bestReps || nReps),
       bestDate: isNewPB ? dateStr : (existing?.bestDate || dateStr)
     };
 
     setPersonalBests(prev => ({ ...prev, [exName]: updatedPB }));
     setFlashMessage(prev => ({ ...prev, [exName]: isNewPB ? '🏆 NEW PB!' : '✓ SAVED' }));
     
+    const setId = `${fullDate}-${exName}-${Date.now()}`;
+    
+    const newSet: SessionSet = {
+      exerciseName: exName,
+      weight: nWeight,
+      reps: nReps,
+      date: fullDate,
+      timestamp: { seconds: Math.floor(Date.now() / 1000) }
+    };
+
+    // Optimistic Update
+    setSessionSets(prev => [...prev, newSet]);
+    
     try {
-      await setDoc(doc(db, `users/${currentUser.uid}/pbs/${exName}`), {
+      const pbsPath = `users/${currentUser.uid}/pbs/${exName}`;
+      const setsPath = `users/${currentUser.uid}/sets/${setId}`;
+      
+      const p1 = setDoc(doc(db, pbsPath), {
         ...updatedPB,
         updatedAt: serverTimestamp()
       });
+
+      const p2 = setDoc(doc(db, setsPath), {
+        exerciseName: exName,
+        weight: nWeight,
+        reps: nReps,
+        date: fullDate,
+        timestamp: serverTimestamp()
+      });
+
+      await Promise.all([p1, p2]);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `pbs/${exName}`);
+      // Revert optimistic update if needed, but for now just log
+      handleFirestoreError(err, OperationType.WRITE, `users/${currentUser.uid}/save-set`);
     }
 
     setTimeout(() => setFlashMessage(prev => {
@@ -299,6 +383,80 @@ export default function App() {
       delete next[exName];
       return next;
     }), 1500);
+  };
+
+  const handleDeleteSet = async (setId: string) => {
+    if (!currentUser) return;
+    try {
+      await deleteDoc(doc(db, `users/${currentUser.uid}/sets/${setId}`));
+      // The real-time listener will update the UI automatically
+    } catch (err) {
+      handleFirestoreError(err, OperationType.DELETE, `users/${currentUser.uid}/sets/${setId}`);
+    }
+  };
+
+  const handleClearHistory = async () => {
+    if (!currentUser) return;
+    
+    try {
+      setDataLoading(true);
+      setShowClearConfirm(false);
+      
+      // Optimistically clear ONLY session sets from UI
+      setSessionSets([]);
+      
+      const userId = currentUser.uid;
+      const setsPath = `users/${userId}/sets`;
+      
+      // Only fetch sets to delete
+      const snap = await getDocs(collection(db, setsPath));
+      
+      if (!snap.empty) {
+        const batch = writeBatch(db);
+        let count = 0;
+        snap.forEach(d => {
+          batch.delete(d.ref);
+          count++;
+        });
+        await batch.commit();
+        console.log(`Cleared ${count} session recordings.`);
+      }
+
+      // Clear any temporary input values in elements
+      const inputs = document.querySelectorAll('input');
+      inputs.forEach((input: any) => {
+        if (input.type === 'number' || input.type === 'text') {
+          input.value = "";
+        }
+      });
+
+    } catch (err) {
+      console.error("Failed to clear session history:", err);
+      handleFirestoreError(err, OperationType.DELETE, `users/${currentUser.uid}/sets-wipe`);
+    } finally {
+      setDataLoading(false);
+    }
+  };
+
+  const handleSaveWeight = async () => {
+    if (!newWeight || !currentUser) return;
+    const w = parseFloat(newWeight);
+    const date = new Date().toISOString().split('T')[0];
+    const id = date;
+
+    const entry: WeightEntry = { weight: w, date, timestamp: serverTimestamp() };
+    
+    try {
+      await setDoc(doc(db, `users/${currentUser.uid}/weightEntries/${id}`), entry);
+      setWeightHistory(prev => {
+        const next = prev.filter(e => e.date !== date);
+        next.push({ ...entry, timestamp: { seconds: Date.now() / 1000 } });
+        return next.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      });
+      setNewWeight("");
+    } catch (err) {
+      handleFirestoreError(err, OperationType.WRITE, `weightEntries/${id}`);
+    }
   };
 
   if (authLoading) {
@@ -368,8 +526,8 @@ export default function App() {
       </header>
 
       {/* Tabs / Navigation */}
-      <nav className="flex flex-wrap items-center gap-3 mb-8">
-        <div className="relative flex-1 min-w-[200px]">
+      <nav className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-8">
+        <div className="relative col-span-2 md:col-span-1">
           <select 
             value={activeWeek === null ? "" : activeWeek}
             onChange={(e) => {
@@ -386,7 +544,7 @@ export default function App() {
             <option value="" className="bg-[#0a0a0a]">-- Select Week --</option>
             {WEEKS.map((w, i) => (
               <option key={w} value={i} className="bg-[#0a0a0a]">
-                {w} - Push/Pull/Shoulders/Legs
+                Week {i + 1}
               </option>
             ))}
           </select>
@@ -401,14 +559,46 @@ export default function App() {
             setActiveWeek(null);
             saveSettings({ activeWeek: null, activeView: 'library' });
           }}
-          className={`px-6 py-3 rounded-2xl text-sm font-bold whitespace-nowrap transition-all border flex items-center gap-2 cursor-pointer ${
+          className={`w-full px-4 py-3 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all border flex items-center justify-center gap-2 cursor-pointer ${
             activeView === 'library'
               ? "bg-gym-accent border-gym-accent-hover text-white shadow-lg shadow-gym-accent/20"
               : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
           }`}
         >
           <Search className="w-4 h-4" />
-          Browse Library
+          Library
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveView('progress');
+            setActiveWeek(null);
+            saveSettings({ activeWeek: null, activeView: 'progress' });
+          }}
+          className={`w-full px-4 py-3 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all border flex items-center justify-center gap-2 cursor-pointer ${
+            activeView === 'progress'
+              ? "bg-gym-accent border-gym-accent-hover text-white shadow-lg shadow-gym-accent/20"
+              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+          }`}
+        >
+          <Scale className="w-4 h-4" />
+          Progress
+        </button>
+
+        <button
+          onClick={() => {
+            setActiveView('session');
+            setActiveWeek(null);
+            saveSettings({ activeWeek: null, activeView: 'session' });
+          }}
+          className={`w-full px-4 py-3 rounded-2xl text-xs sm:text-sm font-bold whitespace-nowrap transition-all border flex items-center justify-center gap-2 cursor-pointer ${
+            activeView === 'session'
+              ? "bg-gym-accent border-gym-accent-hover text-white shadow-lg shadow-gym-accent/20"
+              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
+          }`}
+        >
+          <History className="w-4 h-4" />
+          Session
         </button>
       </nav>
 
@@ -452,6 +642,236 @@ export default function App() {
                   </div>
                 </div>
               ))}
+            </motion.div>
+          ) : activeView === 'progress' ? (
+            <motion.div 
+              key="progress"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-6"
+            >
+              <div className="bg-neutral-900/95 border border-white/10 rounded-3xl p-6 md:p-8 shadow-2xl backdrop-blur-md">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8">
+                  <div>
+                    <h3 className="text-xl font-bold flex items-center gap-2 mb-1">
+                      <TrendingUp className="w-5 h-5 text-gym-accent" />
+                      Weight Tracker
+                    </h3>
+                    <p className="text-sm text-white/40">Visualise your body weight progress over time</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <input 
+                      type="number"
+                      inputMode="decimal"
+                      placeholder="Enter weight (kg)"
+                      value={newWeight}
+                      onChange={(e) => setNewWeight(e.target.value)}
+                      className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:border-gym-accent focus:bg-white/10 transition-all w-32 sm:w-40"
+                    />
+                    <button 
+                      onClick={handleSaveWeight}
+                      className="bg-gym-accent hover:bg-gym-accent-hover text-white px-5 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 flex items-center gap-2 cursor-pointer"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add
+                    </button>
+                  </div>
+                </div>
+
+                <div className="h-[300px] w-full">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={weightHistory}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                      <XAxis 
+                        dataKey="date" 
+                        stroke="#ffffff20" 
+                        fontSize={10} 
+                        tickFormatter={(str) => {
+                          const date = new Date(str);
+                          return isNaN(date.getTime()) ? str : date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                        }}
+                      />
+                      <YAxis domain={['auto', 'auto']} stroke="#ffffff20" fontSize={10} />
+                      <Tooltip 
+                        contentStyle={{ backgroundColor: '#171717', borderColor: '#ffffff10', borderRadius: '12px' }}
+                        itemStyle={{ color: '#00D1FF' }}
+                      />
+                      <Line 
+                        type="monotone" 
+                        dataKey="weight" 
+                        stroke="#00D1FF" 
+                        strokeWidth={3} 
+                        dot={{ fill: '#00D1FF', r: 4 }}
+                        activeDot={{ r: 6, stroke: '#ffffff', strokeWidth: 2 }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                {weightHistory.slice(-4).reverse().map((entry, i) => (
+                  <div key={i} className="bg-white/5 border border-white/5 rounded-2xl p-4 text-center">
+                    <div className="text-[10px] uppercase font-black text-white/30 mb-1">{entry.date}</div>
+                    <div className="text-xl font-black text-white">{entry.weight}kg</div>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          ) : activeView === 'session' ? (
+            <motion.div 
+              key="session"
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="space-y-8 pb-20"
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-xl font-bold flex items-center gap-2 mb-1">
+                    <History className="w-5 h-5 text-gym-accent" />
+                    Workout History
+                  </h3>
+                  <p className="text-sm text-white/40">Review your past performance and sessions</p>
+                </div>
+                
+                {sessionSets.length > 0 && (
+                  <div className="flex items-center gap-2">
+                    <AnimatePresence mode="wait">
+                      {!showClearConfirm ? (
+                        <motion.button
+                          key="main-btn"
+                          initial={{ opacity: 0, scale: 0.9 }}
+                          animate={{ opacity: 1, scale: 1 }}
+                          exit={{ opacity: 0, scale: 0.9 }}
+                          onClick={() => setShowClearConfirm(true)}
+                          disabled={dataLoading}
+                          className="flex items-center gap-2 px-4 py-2 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-xl text-xs font-black uppercase tracking-widest transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          Clear All Session Data
+                        </motion.button>
+                      ) : (
+                        <motion.div 
+                          key="confirm-btns"
+                          initial={{ opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          exit={{ opacity: 0, x: 20 }}
+                          className="flex items-center gap-2 bg-red-500/5 p-1 rounded-xl border border-red-500/20"
+                        >
+                          <button
+                            onClick={handleClearHistory}
+                            disabled={dataLoading}
+                            className="px-3 py-1.5 bg-red-500 text-white rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-red-600 transition-all active:scale-95 cursor-pointer disabled:opacity-50"
+                          >
+                            {dataLoading ? 'Wiping...' : 'Confirm Wipe'}
+                          </button>
+                          <button
+                            onClick={() => setShowClearConfirm(false)}
+                            disabled={dataLoading}
+                            className="px-3 py-1.5 bg-white/5 text-white/50 rounded-lg text-[10px] font-black uppercase tracking-widest hover:bg-white/10 transition-all cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </div>
+
+              {sessionSets.length === 0 ? (
+                <div className="py-20 text-center bg-white/5 rounded-3xl border border-dashed border-white/10">
+                  <Dumbbell className="w-12 h-12 text-white/10 mx-auto mb-4" />
+                  <p className="text-white/30 font-medium">No sets recorded yet.</p>
+                </div>
+              ) : (
+                <div className="space-y-12">
+                  {Object.entries(
+                    [...sessionSets].reduce((acc, set) => {
+                      if (!acc[set.date]) acc[set.date] = [];
+                      acc[set.date].push(set);
+                      return acc;
+                    }, {} as Record<string, SessionSet[]>)
+                  )
+                  .sort((a, b) => b[0].localeCompare(a[0])) // Newest date first
+                      .map(([date, setsByDate]) => {
+                        const setsForDate = setsByDate as SessionSet[];
+                        return (
+                          <div key={date} className="space-y-6">
+                            <div className="flex items-center gap-4">
+                              <div className="h-px flex-1 bg-white/5" />
+                              <h4 className="text-[10px] font-black text-gym-accent uppercase tracking-[0.4em] whitespace-nowrap bg-gym-accent/5 px-4 py-2 rounded-full border border-gym-accent/20">
+                                {(() => {
+                                  const [y, m, d] = date.split('-').map(Number);
+                                  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { 
+                                    weekday: 'long', 
+                                    day: 'numeric', 
+                                    month: 'long' 
+                                  });
+                                })()}
+                              </h4>
+                              <div className="h-px flex-1 bg-white/5" />
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                              {Object.entries(
+                                setsForDate.reduce((acc, set) => {
+                                  if (!acc[set.exerciseName]) acc[set.exerciseName] = [];
+                                  acc[set.exerciseName].push(set);
+                                  return acc;
+                                }, {} as Record<string, SessionSet[]>)
+                              ).map(([name, exerciseSets]) => {
+                                const sets = exerciseSets as SessionSet[];
+                                return (
+                                  <motion.div 
+                                    key={name}
+                                    layout
+                                    className="bg-neutral-900 border border-white/10 rounded-3xl overflow-hidden shadow-xl"
+                                  >
+                                    <div className="p-4 bg-white/5 border-b border-white/5 flex items-center justify-between">
+                                      <h4 className="font-bold text-sm flex items-center gap-2">
+                                        <Activity className="w-3.5 h-3.5 text-gym-accent" />
+                                        {name}
+                                      </h4>
+                                      <span className="text-[10px] text-white/30 font-black">{sets.length} Sets</span>
+                                    </div>
+                                    <div className="p-4 space-y-2">
+                                      {sets.map((set, idx) => (
+                                        <div key={idx} className="flex items-center justify-between bg-white/[0.03] p-3 rounded-xl border border-white/5 group relative">
+                                          <div className="flex items-center gap-4">
+                                            <div className="flex items-baseline gap-1.5">
+                                              <span className="text-xl font-black text-white tabular-nums">{set.weight}</span>
+                                              <span className="text-[10px] text-white/30 uppercase font-bold tracking-tighter">kg</span>
+                                            </div>
+                                            <div className="flex items-baseline gap-1.5">
+                                              <span className="text-lg font-bold text-white/70 tabular-nums">{set.reps}</span>
+                                              <span className="text-[10px] text-white/30 uppercase font-bold tracking-tighter">reps</span>
+                                            </div>
+                                          </div>
+                                          
+                                          {set.id && (
+                                            <button 
+                                              onClick={() => handleDeleteSet(set.id!)}
+                                              className="p-2 text-white/10 hover:text-red-500 hover:bg-red-500/10 rounded-lg transition-all opacity-0 group-hover:opacity-100 cursor-pointer"
+                                              title="Delete entry"
+                                            >
+                                              <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                          )}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </motion.div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })}
+                </div>
+              )}
             </motion.div>
           ) : activeWeek !== null ? (
             <motion.div 
@@ -535,9 +955,15 @@ export default function App() {
                                   />
                                   <button 
                                     onClick={() => {
-                                      const w = (document.getElementById(`w-${di}-${ei}`) as HTMLInputElement)?.value;
-                                      const r = (document.getElementById(`r-${di}-${ei}`) as HTMLInputElement)?.value;
-                                      handleSaveSet(ex.name, w, r);
+                                      const wInput = document.getElementById(`w-${di}-${ei}`) as HTMLInputElement;
+                                      const rInput = document.getElementById(`r-${di}-${ei}`) as HTMLInputElement;
+                                      const w = wInput?.value;
+                                      const r = rInput?.value;
+                                      if (w && r) {
+                                        handleSaveSet(ex.name, w, r);
+                                        if (wInput) wInput.value = "";
+                                        if (rInput) rInput.value = "";
+                                      }
                                     }}
                                     className="bg-gym-accent hover:bg-gym-accent-hover text-white px-4 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 shadow-lg shadow-gym-accent/30 cursor-pointer uppercase font-black"
                                   >

@@ -6,50 +6,51 @@ service cloud.firestore {
       allow read, write: if false;
     }
 
-    // Phase 3: Primitive Definition
-    function isValidId(id) { return id is string && id.size() <= 256 && id.matches('^[a-zA-Z0-9_\\-\\.\\(\\)\\s]+$'); }
-    function isSignedIn() { return request.auth != null; }
-    function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
+    // Primitives
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
     function incoming() { return request.resource.data; }
-    function existing() { return resource.data; }
 
     // Validation Helpers
     function isValidWorkoutPlan(data) {
-      return data.keys().hasAll(['days']) && 
-             (data.days is list || data.days is map) &&
-             (data.get('updatedAt', null) == null || data.updatedAt is timestamp);
+      return data.keys().hasAll(['days']) && data.days is list;
     }
 
     function isValidPersonalBest(data) {
       return data.keys().hasAll(['bestWeight', 'bestReps', 'exerciseName']) &&
-             data.bestWeight is number &&
-             data.bestReps is number &&
-             data.exerciseName is string &&
-             data.exerciseName.size() <= 200 &&
-             (data.get('updatedAt', null) == null || data.updatedAt is timestamp);
+             data.bestWeight is number && data.bestReps is number && data.exerciseName is string;
     }
 
     function isValidUserProfile(data) {
-      return (data.get('activeWeek', null) == null || data.activeWeek is number || data.get('activeWeek', null) == null) &&
-             (data.get('activeView', null) == null || data.activeView is string || data.get('activeView', null) == null) &&
-             (data.get('updatedAt', null) == null || data.updatedAt is timestamp);
+      return (data.get('activeWeek', null) == null || data.activeWeek is number);
     }
 
+    function isValidWeightEntry(data) {
+      return data.keys().hasAll(['weight', 'date']) && data.weight is number && data.date is string;
+    }
+
+    function isValidSessionSet(data) {
+      return data.keys().hasAll(['exerciseName', 'weight', 'reps', 'date']) &&
+             data.exerciseName is string && data.weight is number && data.reps is number && data.date is string;
+    }
+
+    // User Subtree - Primary Access Control
     match /users/{userId} {
-      match /workout/current {
-        allow get: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidWorkoutPlan(incoming());
-      }
+      allow read, write: if isOwner(userId);
+    }
 
-      match /pbs/{exerciseName} {
-        allow get, list: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidPersonalBest(incoming()) && isValidId(exerciseName);
-      }
-
-      match /profile/settings {
-        allow get: if isOwner(userId);
-        allow create, update: if isOwner(userId) && isValidUserProfile(incoming());
-      }
+    match /users/{userId}/{allPaths=**} {
+      allow read, write: if isOwner(userId);
     }
   }
 }
