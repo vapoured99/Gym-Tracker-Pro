@@ -1,0 +1,61 @@
+{
+  "entities": {
+    "WorkoutPlan": {
+      "title": "Workout Plan",
+      "description": "The current 4-day workout plan for a user.",
+      "type": "object",
+      "properties": {
+        "days": {
+          "type": "array",
+          "description": "A 2D array of exercises representing a 4-day cycle."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["days"]
+    },
+    "PersonalBest": {
+      "title": "Personal Best",
+      "description": "The best and latest performance for a specific exercise.",
+      "type": "object",
+      "properties": {
+        "bestWeight": { "type": "number" },
+        "bestReps": { "type": "number" },
+        "bestDate": { "type": "string" },
+        "lastWeight": { "type": "number" },
+        "lastReps": { "type": "number" },
+        "lastDate": { "type": "string" },
+        "exerciseName": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["bestWeight", "bestReps", "exerciseName"]
+    },
+    "UserProfile": {
+      "title": "User Profile",
+      "description": "General settings and state for the user.",
+      "type": "object",
+      "properties": {
+        "activeWeek": { "type": "number" },
+        "activeView": { "type": "string" },
+        "email": { "type": "string" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      }
+    }
+  },
+  "firestore": {
+    "/users/{userId}/workout/current": {
+      "schema": "WorkoutPlan",
+      "description": "The current active workout plan for the user."
+    },
+    "/users/{userId}/pbs/{exerciseName}": {
+      "schema": "PersonalBest",
+      "description": "Tracking progress for individual exercises."
+    },
+    "/users/{userId}/profile/settings": {
+      "schema": "UserProfile",
+      "description": "User specific settings and metadata."
+    }
+  }
+}
