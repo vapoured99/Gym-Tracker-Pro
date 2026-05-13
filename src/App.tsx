@@ -75,7 +75,7 @@ const buildPlan = () => [
 ];
 
 // --- Components ---
-const PBBlock = ({ exName, pbs }: { exName: string, pbs: Record<string, PB> }) => {
+const PBBlock = ({ exName, pbs, showLatest = true }: { exName: string, pbs: Record<string, PB>, showLatest?: boolean }) => {
   const pb = pbs[exName];
   if (!pb) {
     return (
@@ -88,21 +88,24 @@ const PBBlock = ({ exName, pbs }: { exName: string, pbs: Record<string, PB> }) =
 
   return (
     <div className="mt-3 p-3 rounded-xl bg-gym-accent/5 border border-gym-accent/20">
-      <div className="text-[10px] text-gym-accent font-bold uppercase mb-2 flex items-center gap-1">
+      <div className={`text-[10px] text-gym-accent font-bold uppercase flex items-center gap-1 ${showLatest ? 'mb-2' : ''}`}>
         <Trophy className="w-3 h-3" /> Best: {pb.bestWeight}kg × {pb.bestReps} <span className="opacity-50 ml-1">({pb.bestDate})</span>
       </div>
-      <div className="flex items-center gap-3">
-        <div className="flex items-baseline gap-0.5">
-          <span className="text-xl font-bold text-white">{pb.lastWeight}</span>
-          <span className="text-[10px] text-white/40 uppercase font-bold">kg</span>
+      
+      {showLatest && (
+        <div className="flex items-center gap-3">
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-xl font-bold text-white">{pb.lastWeight}</span>
+            <span className="text-[10px] text-white/40 uppercase font-bold">kg</span>
+          </div>
+          <div className="text-white/20 text-lg">×</div>
+          <div className="flex items-baseline gap-0.5">
+            <span className="text-xl font-bold text-white">{pb.lastReps}</span>
+            <span className="text-[10px] text-white/40 uppercase font-bold">reps</span>
+          </div>
+          <div className="ml-auto text-[10px] text-white/30">Latest: {pb.lastDate}</div>
         </div>
-        <div className="text-white/20 text-lg">×</div>
-        <div className="flex items-baseline gap-0.5">
-          <span className="text-xl font-bold text-white">{pb.lastReps}</span>
-          <span className="text-[10px] text-white/40 uppercase font-bold">reps</span>
-        </div>
-        <div className="ml-auto text-[10px] text-white/30">Latest: {pb.lastDate}</div>
-      </div>
+      )}
     </div>
   );
 };
@@ -442,7 +445,7 @@ export default function App() {
                             <Icon className="w-4 h-4 text-white/30" />
                             <span className="font-semibold text-sm">{ex.name}</span>
                           </div>
-                          <PBBlock exName={ex.name} pbs={personalBests} />
+                          <PBBlock exName={ex.name} pbs={personalBests} showLatest={false} />
                         </div>
                       );
                     })}
