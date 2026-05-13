@@ -205,7 +205,7 @@ export default function App() {
           if (data.activeView) setActiveView(data.activeView as any);
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.GET, "Static Load");
+        console.error("Static Load error:", err);
       }
     };
 
@@ -216,19 +216,46 @@ export default function App() {
       const sets: SessionSet[] = [];
       snapshot.forEach(d => sets.push({ id: d.id, ...d.data() } as SessionSet));
       setSessionSets(sets.sort((a, b) => (a.timestamp?.seconds || 0) - (b.timestamp?.seconds || 0)));
-    }, (err) => handleFirestoreError(err, OperationType.GET, setsPath));
+    }, (err) => console.error("Sets listener error:", err));
 
     const unsubscribePbs = onSnapshot(collection(db, pbsPath), (snapshot) => {
       const pbs: Record<string, PB> = {};
       snapshot.forEach(d => { pbs[d.id] = d.data() as PB; });
       setPersonalBests(pbs);
-    }, (err) => handleFirestoreError(err, OperationType.GET, pbsPath));
+    }, (err) => console.error("PBs listener error:", err));
 
     const unsubscribeWeight = onSnapshot(collection(db, weightPath), (snapshot) => {
       const weights: WeightEntry[] = [];
-      snapshot.forEach(d => weights.push({ id: d.id, ...d.data() } as WeightEntry));
-      setWeightHistory(weights.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
-    }, (err) => handleFirestoreError(err, OperationType.GET, weightPath));
+      snapshot.forEach(d => {
+        const data = d.data();
+        if (data && typeof data.weight === 'number') {
+          weights.push({ 
+            id: d.id, 
+            weight: data.weight,
+            date: data.date || new Date().toISOString().split('T')[0],
+            timestamp: data.timestamp
+          });
+        }
+      });
+      
+      const sorted = weights.sort((a, b) => {
+        const dateA = new Date(a.date).getTime() || 0;
+        const dateB = new Date(b.date).getTime() || 0;
+        if (dateA !== dateB) return dateA - dateB;
+        
+        const getTs = (ts: any) => {
+          if (!ts) return 0;
+          if (typeof ts.toMillis === 'function') return ts.toMillis();
+          if (ts.seconds) return ts.seconds * 1000;
+          return 0;
+        };
+        return getTs(a.timestamp) - getTs(b.timestamp);
+      });
+      
+      setWeightHistory([...sorted]);
+    }, (err) => {
+      console.error("Weight snapshot error:", err);
+    });
 
     return () => {
       unsubscribeSets();
@@ -438,24 +465,45 @@ export default function App() {
     }
   };
 
-  const handleSaveWeight = async () => {
-    if (!newWeight || !currentUser) return;
-    const w = parseFloat(newWeight);
-    const date = new Date().toISOString().split('T')[0];
-    const id = date;
+  const [isSavingWeight, setIsSavingWeight] = useState(false);
+  const [weightFlash, setWeightFlash] = useState("");
 
-    const entry: WeightEntry = { weight: w, date, timestamp: serverTimestamp() };
+  const handleSaveWeight = async () => {
+    if (!newWeight || !currentUser || isSavingWeight) return;
+    
+    const w = parseFloat(newWeight);
+    if (isNaN(w) || w <= 0) {
+      setWeightFlash("Invalid weight");
+      setTimeout(() => setWeightFlash(""), 2000);
+      return;
+    }
+
+    setIsSavingWeight(true);
+    const date = new Date().toISOString().split('T')[0];
+    
+    const entry: Omit<WeightEntry, 'id'> = { 
+      weight: w, 
+      date, 
+      timestamp: serverTimestamp() 
+    };
     
     try {
-      await setDoc(doc(db, `users/${currentUser.uid}/weightEntries/${id}`), entry);
-      setWeightHistory(prev => {
-        const next = prev.filter(e => e.date !== date);
-        next.push({ ...entry, timestamp: { seconds: Date.now() / 1000 } });
-        return next.sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
-      });
+      const weightCol = collection(db, `users/${currentUser.uid}/weightEntries`);
+      const docId = `w-${Date.now()}`;
+      
+      await setDoc(doc(db, `users/${currentUser.uid}/weightEntries`, docId), entry);
+      
       setNewWeight("");
+      setWeightFlash("✓ SAVED");
+      
+      // Simple feedback: focus the graph or just keep the flash
+      setTimeout(() => setWeightFlash(""), 2000);
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, `weightEntries/${id}`);
+      console.error("Error saving weight:", err);
+      setWeightFlash("Error saving");
+      setTimeout(() => setWeightFlash(""), 3000);
+    } finally {
+      setIsSavingWeight(false);
     }
   };
 
@@ -660,61 +708,150 @@ export default function App() {
                     </h3>
                     <p className="text-sm text-white/40">Visualise your body weight progress over time</p>
                   </div>
-                  <div className="flex gap-2">
-                    <input 
-                      type="number"
-                      inputMode="decimal"
-                      placeholder="Enter weight (kg)"
-                      value={newWeight}
-                      onChange={(e) => setNewWeight(e.target.value)}
-                      className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:border-gym-accent focus:bg-white/10 transition-all w-32 sm:w-40"
-                    />
+                  <div className="flex items-center gap-3">
+                    <div className="relative group">
+                      <input 
+                        type="number"
+                        inputMode="decimal"
+                        placeholder="Enter weight (kg)"
+                        value={newWeight}
+                        onChange={(e) => setNewWeight(e.target.value)}
+                        disabled={isSavingWeight}
+                        className="bg-white/5 border border-white/10 rounded-xl px-4 py-3 text-sm font-bold focus:outline-none focus:border-gym-accent focus:bg-white/10 transition-all w-32 sm:w-40 disabled:opacity-50"
+                      />
+                      <AnimatePresence>
+                        {weightFlash && (
+                          <motion.div 
+                            initial={{ opacity: 0, scale: 0.8, y: 10 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.8, y: 10 }}
+                            className={`absolute -bottom-8 left-0 right-0 text-center text-[10px] font-black uppercase tracking-widest ${weightFlash.includes('Error') || weightFlash.includes('Invalid') ? 'text-red-500' : 'text-gym-accent'}`}
+                          >
+                            {weightFlash}
+                          </motion.div>
+                        )}
+                      </AnimatePresence>
+                    </div>
                     <button 
                       onClick={handleSaveWeight}
-                      className="bg-gym-accent hover:bg-gym-accent-hover text-white px-5 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 flex items-center gap-2 cursor-pointer"
+                      disabled={isSavingWeight || !newWeight}
+                      className="bg-gym-accent hover:bg-gym-accent-hover text-white px-5 py-3 rounded-xl font-bold text-sm transition-all active:scale-95 flex items-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed group"
                     >
-                      <Plus className="w-4 h-4" />
-                      Add
+                      {isSavingWeight ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Plus className="w-4 h-4 group-hover:rotate-90 transition-transform" />
+                      )}
+                      {isSavingWeight ? 'Saving...' : 'Add Weight'}
                     </button>
                   </div>
                 </div>
 
-                <div className="h-[300px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <LineChart data={weightHistory}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
-                      <XAxis 
-                        dataKey="date" 
-                        stroke="#ffffff20" 
-                        fontSize={10} 
-                        tickFormatter={(str) => {
-                          const date = new Date(str);
-                          return isNaN(date.getTime()) ? str : date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-                        }}
-                      />
-                      <YAxis domain={['auto', 'auto']} stroke="#ffffff20" fontSize={10} />
-                      <Tooltip 
-                        contentStyle={{ backgroundColor: '#171717', borderColor: '#ffffff10', borderRadius: '12px' }}
-                        itemStyle={{ color: '#00D1FF' }}
-                      />
-                      <Line 
-                        type="monotone" 
-                        dataKey="weight" 
-                        stroke="#00D1FF" 
-                        strokeWidth={3} 
-                        dot={{ fill: '#00D1FF', r: 4 }}
-                        activeDot={{ r: 6, stroke: '#ffffff', strokeWidth: 2 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
+                <div className="h-[350px] w-full">
+                  {weightHistory.length === 0 ? (
+                    <div className="h-full flex flex-col items-center justify-center bg-white/5 rounded-2xl border border-white/5 border-dashed">
+                      <TrendingUp className="w-12 h-12 text-white/10 mb-2" />
+                      <p className="text-white/20 font-bold text-sm">Add your weight to see your progress graph</p>
+                    </div>
+                  ) : (
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={weightHistory} margin={{ top: 20, right: 20, left: -10, bottom: 20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#ffffff05" vertical={false} />
+                        <XAxis 
+                          dataKey="date" 
+                          stroke="#ffffff33" 
+                          fontSize={10} 
+                          tickLine={false}
+                          axisLine={false}
+                          dy={15}
+                          minTickGap={40}
+                          tickFormatter={(str) => {
+                            if (!str) return '---';
+                            try {
+                              const date = new Date(str);
+                              if (isNaN(date.getTime())) return str;
+                              return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                            } catch (e) {
+                              return str;
+                            }
+                          }}
+                        />
+                        <YAxis 
+                          domain={['auto', 'auto']} 
+                          stroke="#ffffff33" 
+                          fontSize={10} 
+                          tickLine={false}
+                          axisLine={false}
+                          width={30}
+                          tickFormatter={(val) => `${val}`}
+                        />
+                        <Tooltip 
+                          contentStyle={{ 
+                            backgroundColor: '#111111', 
+                            borderColor: '#ffffff10', 
+                            borderRadius: '16px',
+                            boxShadow: '0 20px 40px rgba(0,0,0,0.5)',
+                            padding: '12px'
+                          }}
+                          itemStyle={{ color: '#00D1FF', fontWeight: 'bold' }}
+                          labelStyle={{ color: '#ffffff50', fontSize: '10px', textTransform: 'uppercase', fontWeight: '900', marginBottom: '4px' }}
+                          labelFormatter={(str) => {
+                            if (!str) return 'Unknown Date';
+                            try {
+                              const date = new Date(str);
+                              if (isNaN(date.getTime())) return str;
+                              return date.toLocaleDateString('en-GB', { weekday: 'long', day: 'numeric', month: 'long' });
+                            } catch (e) {
+                              return str;
+                            }
+                          }}
+                        />
+                        <Line 
+                          type="monotone" 
+                          dataKey="weight" 
+                          stroke="#00D1FF" 
+                          strokeWidth={4} 
+                          dot={{ fill: '#00D1FF', r: 5, strokeWidth: 2, stroke: '#111111' }}
+                          activeDot={{ r: 7, stroke: '#ffffff', strokeWidth: 3 }}
+                          animationDuration={1500}
+                          isAnimationActive={true}
+                          connectNulls
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  )}
                 </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
                 {weightHistory.slice(-4).reverse().map((entry, i) => (
-                  <div key={i} className="bg-white/5 border border-white/5 rounded-2xl p-4 text-center">
-                    <div className="text-[10px] uppercase font-black text-white/30 mb-1">{entry.date}</div>
+                  <div key={entry.id || i} className="bg-white/5 border border-white/5 rounded-2xl p-4 text-center group relative">
+                    <div className="text-[10px] uppercase font-black text-white/30 mb-1">
+                      {(() => {
+                        if (!entry.date) return 'Unknown';
+                        const parts = entry.date.split('-').map(Number);
+                        if (parts.length !== 3) return entry.date;
+                        const date = new Date(parts[0], parts[1] - 1, parts[2]);
+                        return date.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+                      })()}
+                    </div>
                     <div className="text-xl font-black text-white">{entry.weight}kg</div>
+                    {entry.id && (
+                      <button 
+                        onClick={async () => {
+                          if (!currentUser) return;
+                          try {
+                            await deleteDoc(doc(db, `users/${currentUser.uid}/weightEntries/${entry.id}`));
+                          } catch (err) {
+                            handleFirestoreError(err, OperationType.DELETE, `weightEntries/${entry.id}`);
+                          }
+                        }}
+                        className="absolute -top-2 -right-2 p-1.5 bg-red-500 text-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg cursor-pointer"
+                        title="Delete entry"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -803,14 +940,16 @@ export default function App() {
                             <div className="flex items-center gap-4">
                               <div className="h-px flex-1 bg-white/5" />
                               <h4 className="text-[10px] font-black text-gym-accent uppercase tracking-[0.4em] whitespace-nowrap bg-gym-accent/5 px-4 py-2 rounded-full border border-gym-accent/20">
-                                {(() => {
-                                  const [y, m, d] = date.split('-').map(Number);
-                                  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { 
-                                    weekday: 'long', 
-                                    day: 'numeric', 
-                                    month: 'long' 
-                                  });
-                                })()}
+                                  {(() => {
+                                    if (!date) return 'Unknown Date';
+                                    const parts = date.split('-').map(Number);
+                                    if (parts.length !== 3) return date;
+                                    return new Date(parts[0], parts[1] - 1, parts[2]).toLocaleDateString('en-GB', { 
+                                      weekday: 'long', 
+                                      day: 'numeric', 
+                                      month: 'long' 
+                                    });
+                                  })()}
                               </h4>
                               <div className="h-px flex-1 bg-white/5" />
                             </div>

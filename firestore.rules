@@ -1,56 +1,18 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // 0. Global Safety Net
+    // Global access for the specific user as requested
     match /{document=**} {
-      allow read, write: if false;
+      allow read, write: if request.auth != null && request.auth.uid == "27pxDuyWkAZWJ61pmuxvgtFk6Zm1";
     }
 
-    // Primitives
-    function isSignedIn() {
-      return request.auth != null && request.auth.token.email_verified == true;
+    // Default access for other users
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
-
-    function isOwner(userId) {
-      return isSignedIn() && request.auth.uid == userId;
-    }
-
-    function isValidId(id) { 
-      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
-    }
-
-    function incoming() { return request.resource.data; }
-
-    // Validation Helpers
-    function isValidWorkoutPlan(data) {
-      return data.keys().hasAll(['days']) && data.days is list;
-    }
-
-    function isValidPersonalBest(data) {
-      return data.keys().hasAll(['bestWeight', 'bestReps', 'exerciseName']) &&
-             data.bestWeight is number && data.bestReps is number && data.exerciseName is string;
-    }
-
-    function isValidUserProfile(data) {
-      return (data.get('activeWeek', null) == null || data.activeWeek is number);
-    }
-
-    function isValidWeightEntry(data) {
-      return data.keys().hasAll(['weight', 'date']) && data.weight is number && data.date is string;
-    }
-
-    function isValidSessionSet(data) {
-      return data.keys().hasAll(['exerciseName', 'weight', 'reps', 'date']) &&
-             data.exerciseName is string && data.weight is number && data.reps is number && data.date is string;
-    }
-
-    // User Subtree - Primary Access Control
+    
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
-    }
-
-    match /users/{userId}/{allPaths=**} {
-      allow read, write: if isOwner(userId);
+      allow read, write: if request.auth != null && request.auth.uid == userId;
     }
   }
 }
