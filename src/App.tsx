@@ -64,10 +64,14 @@ const iconMap: Record<string, any> = {
 const pick = (arr: any[], n: number) => [...arr].sort(() => Math.random() - 0.5).slice(0, n);
 
 const buildPlan = () => [
+  // Day 1: 1 Bench + 2 Chest + 2 Triceps + 1 Abs = 6
   [{ name: "Barbell Bench Press", icon: "Dumbbell", pool: "chest" }, ...pick(POOLS.chest, 2), ...pick(POOLS.triceps, 2), ...pick(POOLS.abs, 1)],
-  [...pick(POOLS.back, 2), ...pick(POOLS.biceps, 2), ...pick(POOLS.abs, 1)],
-  [{ name: "Barbell Bench Press", icon: "Dumbbell", pool: "chest" }, ...pick(POOLS.shoulders, 2), ...pick(POOLS.abs, 1)],
-  pick(POOLS.legs, 4)
+  // Day 2: 3 Back + 2 Biceps + 1 Abs = 6
+  [...pick(POOLS.back, 3), ...pick(POOLS.biceps, 2), ...pick(POOLS.abs, 1)],
+  // Day 3: 1 Bench + 4 Shoulders + 1 Abs = 6
+  [{ name: "Barbell Bench Press", icon: "Dumbbell", pool: "chest" }, ...pick(POOLS.shoulders, 4), ...pick(POOLS.abs, 1)],
+  // Day 4: 5 Legs + 1 Abs = 6
+  [...pick(POOLS.legs, 5), ...pick(POOLS.abs, 1)]
 ];
 
 // --- Components ---
@@ -132,13 +136,25 @@ export default function App() {
       setDataLoading(true);
       try {
         // Load Workout
-        const workoutDoc = await getDoc(doc(db, `users/${currentUser.uid}/workout/current`));
+        const workoutPath = `users/${currentUser.uid}/workout/current`;
+        const workoutDoc = await getDoc(doc(db, workoutPath));
         if (workoutDoc.exists()) {
-          setCurrentDays(workoutDoc.data().days);
+          const data = workoutDoc.data();
+          // Convert stored object back to 2D array if needed
+          if (data.days && !Array.isArray(data.days)) {
+            const daysArr: Exercise[][] = [];
+            for (let i = 0; i < 4; i++) {
+              daysArr.push(data.days[`d${i}`] || []);
+            }
+            setCurrentDays(daysArr);
+          } else if (Array.isArray(data.days)) {
+            setCurrentDays(data.days as Exercise[][]);
+          }
         }
 
         // Load PBs
-        const pbsSnap = await getDocs(collection(db, `users/${currentUser.uid}/pbs`));
+        const pbsPath = `users/${currentUser.uid}/pbs`;
+        const pbsSnap = await getDocs(collection(db, pbsPath));
         const pbs: Record<string, PB> = {};
         pbsSnap.forEach(d => {
           pbs[d.id] = d.data() as PB;
@@ -146,14 +162,15 @@ export default function App() {
         setPersonalBests(pbs);
 
         // Load Settings
-        const settingsDoc = await getDoc(doc(db, `users/${currentUser.uid}/profile/settings`));
+        const settingsPath = `users/${currentUser.uid}/profile/settings`;
+        const settingsDoc = await getDoc(doc(db, settingsPath));
         if (settingsDoc.exists()) {
           const data = settingsDoc.data();
           if (data.activeWeek !== undefined) setActiveWeek(data.activeWeek);
           if (data.activeView) setActiveView(data.activeView as any);
         }
       } catch (err) {
-        handleFirestoreError(err, OperationType.GET, 'users');
+        handleFirestoreError(err, OperationType.GET, `users/${currentUser.uid}`);
       } finally {
         setDataLoading(false);
       }
@@ -164,13 +181,20 @@ export default function App() {
 
   const saveWorkout = async (days: Exercise[][]) => {
     if (!currentUser) return;
+    const path = `users/${currentUser.uid}/workout/current`;
     try {
-      await setDoc(doc(db, `users/${currentUser.uid}/workout/current`), {
-        days,
+      // Map 2D array to object to avoid "Nested arrays are not supported" error in Firestore
+      const daysObj: Record<string, Exercise[]> = {};
+      days.forEach((day, i) => {
+        daysObj[`d${i}`] = day;
+      });
+      
+      await setDoc(doc(db, path), {
+        days: daysObj,
         updatedAt: serverTimestamp()
       });
     } catch (err) {
-      handleFirestoreError(err, OperationType.WRITE, 'workout');
+      handleFirestoreError(err, OperationType.WRITE, path);
     }
   };
 
@@ -340,40 +364,48 @@ export default function App() {
         </div>
       </header>
 
-      {/* Tabs */}
-      <nav className="flex overflow-x-auto gap-2 mb-8 no-scrollbar bg-white/5 p-2 rounded-2xl border border-white/10">
-        {WEEKS.map((w, i) => (
-          <button
-            key={w}
-            onClick={() => {
-              const week = activeWeek === i ? null : i;
+      {/* Tabs / Navigation */}
+      <nav className="flex flex-wrap items-center gap-3 mb-8">
+        <div className="relative flex-1 min-w-[200px]">
+          <select 
+            value={activeWeek === null ? "" : activeWeek}
+            onChange={(e) => {
+              const val = e.target.value;
+              const week = val === "" ? null : parseInt(val);
               setActiveWeek(week);
               setActiveView('workout');
               saveSettings({ activeWeek: week, activeView: 'workout' });
             }}
-            className={`px-5 py-2.5 rounded-xl text-sm whitespace-nowrap transition-all border shrink-0 ${
-              activeView === 'workout' && activeWeek === i
-                ? "bg-gym-accent border-gym-accent-hover text-white font-bold shadow-lg shadow-gym-accent/20"
-                : "bg-white/10 border-white/10 text-white/70 hover:bg-white/15 cursor-pointer"
+            className={`w-full appearance-none bg-white/5 border border-white/10 rounded-2xl px-5 py-3 pr-12 text-sm font-bold transition-all focus:outline-none focus:border-gym-accent focus:bg-white/10 cursor-pointer ${
+              activeView === 'workout' && activeWeek !== null ? 'text-white border-gym-accent/40 bg-gym-accent/5' : 'text-white/50'
             }`}
           >
-            {w}
-          </button>
-        ))}
+            <option value="" className="bg-[#0a0a0a]">-- Select Week --</option>
+            {WEEKS.map((w, i) => (
+              <option key={w} value={i} className="bg-[#0a0a0a]">
+                {w} - Push/Pull/Shoulders/Legs
+              </option>
+            ))}
+          </select>
+          <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-white/30">
+            <ChevronDown className="w-5 h-5" />
+          </div>
+        </div>
+
         <button
           onClick={() => {
             setActiveView('library');
             setActiveWeek(null);
             saveSettings({ activeWeek: null, activeView: 'library' });
           }}
-          className={`px-5 py-2.5 rounded-xl text-sm whitespace-nowrap transition-all border shrink-0 flex items-center gap-2 ${
+          className={`px-6 py-3 rounded-2xl text-sm font-bold whitespace-nowrap transition-all border flex items-center gap-2 cursor-pointer ${
             activeView === 'library'
-              ? "bg-gym-accent border-gym-accent-hover text-white font-bold shadow-lg shadow-gym-accent/20"
-              : "bg-white/10 border-white/10 text-white/70 hover:bg-white/15 cursor-pointer"
+              ? "bg-gym-accent border-gym-accent-hover text-white shadow-lg shadow-gym-accent/20"
+              : "bg-white/5 border-white/10 text-white/70 hover:bg-white/10"
           }`}
         >
           <Search className="w-4 h-4" />
-          Library
+          Browse Library
         </button>
       </nav>
 

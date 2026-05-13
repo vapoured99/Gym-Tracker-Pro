@@ -7,7 +7,7 @@ service cloud.firestore {
     }
 
     // Phase 3: Primitive Definition
-    function isValidId(id) { return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-\\.]+$'); }
+    function isValidId(id) { return id is string && id.size() <= 256 && id.matches('^[a-zA-Z0-9_\\-\\.\\(\\)\\s]+$'); }
     function isSignedIn() { return request.auth != null; }
     function isOwner(userId) { return isSignedIn() && request.auth.uid == userId; }
     function incoming() { return request.resource.data; }
@@ -16,7 +16,7 @@ service cloud.firestore {
     // Validation Helpers
     function isValidWorkoutPlan(data) {
       return data.keys().hasAll(['days']) && 
-             data.days is list &&
+             (data.days is list || data.days is map) &&
              (data.get('updatedAt', null) == null || data.updatedAt is timestamp);
     }
 
@@ -30,8 +30,8 @@ service cloud.firestore {
     }
 
     function isValidUserProfile(data) {
-      return (data.get('activeWeek', null) == null || data.activeWeek is number) &&
-             (data.get('activeView', null) == null || data.activeView is string) &&
+      return (data.get('activeWeek', null) == null || data.activeWeek is number || data.get('activeWeek', null) == null) &&
+             (data.get('activeView', null) == null || data.activeView is string || data.get('activeView', null) == null) &&
              (data.get('updatedAt', null) == null || data.updatedAt is timestamp);
     }
 
